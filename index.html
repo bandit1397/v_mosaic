@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>현장용 얼굴 모자이크 (GitHub Pages)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<style>
+body{
+  margin:0;
+  background:#111;
+  color:#fff;
+  font-family:system-ui, -apple-system, BlinkMacSystemFont;
+  text-align:center;
+}
+header{
+  padding:10px;
+  background:#000;
+  font-size:18px;
+  font-weight:bold;
+}
+#wrap{
+  position:relative;
+  display:inline-block;
+}
+video, canvas{
+  max-width:100%;
+}
+canvas{
+  position:absolute;
+  left:0;
+  top:0;
+}
+.controls{
+  margin:10px;
+}
+button{
+  font-size:16px;
+  padding:8px 14px;
+  margin:5px;
+}
+.notice{
+  font-size:14px;
+  color:#ffcc00;
+}
+</style>
+
+<!-- MediaPipe CDN -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+</head>
+
+<body>
+
+<header>현장 비식별화 얼굴 모자이크</header>
+
+<div class="controls">
+  <input type="file" id="videoInput" accept="video/*">
+  <button onclick="resetTracking()">재지정</button>
+</div>
+
+<div class="notice">
+  ※ 얼굴이 겹치면 자동 정지 → 재지정 필요
+</div>
+
+<div id="wrap">
+  <video id="video" controls playsinline></video>
+  <canvas id="canvas"></canvas>
+</div>
+
+<script>
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+let trackingEnabled = true;
+let lastFaces = [];
+
+// MediaPipe Face Detection
+const faceDetection = new FaceDetection.FaceDetection({
+  locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`
+});
+
+faceDetection.setOptions({
+  model: "short",
+  minDetectionConfidence: 0.6
+});
+
+faceDetection.onResults(onResults);
+
+// 비디오 업로드
+document.getElementById("videoInput").addEventListener("change", e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  video.src = URL.createObjectURL(file);
+  video.play();
+});
+
+// 프레임 처리
+video.addEventListener("play", () => {
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  requestAnimationFrame(processFrame);
+});
+
+async function processFrame(){
+  if (video.paused || video.ended) return;
+  await faceDetection.send({image: video});
+  requestAnimationFrame(processFrame);
+}
+
+function onResults(results){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  if (!trackingEnabled) return;
+
+  if (!results.detections) return;
+
+  // 얼굴이 겹치면 중단
+  if (results.detections.length > 1){
+    if (facesOverlap(results.detections)){
+      trackingEnabled = false;
+      alert("얼굴이 겹쳐 추적 중단\n재지정하세요");
+      return;
+    }
+  }
+
+  results.detections.forEach(det => {
+    const box = det.locationData.relativeBoundingBox;
+    const x = box.xMin * canvas.width;
+    const y = box.yMin * canvas.height;
+    const w = box.width * canvas.width;
+    const h = box.height * canvas.height;
+
+    mosaic(x,y,w,h);
+  });
+
+  lastFaces = results.detections;
+}
+
+// 모자이크 함수
+function mosaic(x,y,w,h){
+  const size = 12;
+  ctx.drawImage(video, x,y,w,h, x,y,size,size);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(canvas, x,y,size,size, x,y,w,h);
+  ctx.imageSmoothingEnabled = true;
+}
+
+// 얼굴 겹침 판단
+function facesOverlap(detections){
+  if (detections.length < 2) return false;
+
+  const a = detections[0].locationData.relativeBoundingBox;
+  const b = detections[1].locationData.relativeBoundingBox;
+
+  return !(
+    a.xMin + a.width < b.xMin ||
+    b.xMin + b.width < a.xMin ||
+    a.yMin + a.height < b.yMin ||
+    b.yMin + b.height < a.yMin
+  );
+}
+
+// 재지정
+function resetTracking(){
+  trackingEnabled = true;
+}
+</script>
+
+</body>
+</html>
