@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<title>현장용 얼굴 모자이크 (GitHub Pages)</title>
+<title>현장용 얼굴 모자이크 (PC / GitHub Pages)</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
 <style>
@@ -10,75 +10,86 @@ body{
   margin:0;
   background:#111;
   color:#fff;
-  font-family:system-ui, -apple-system, BlinkMacSystemFont;
+  font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI";
   text-align:center;
 }
 header{
-  padding:10px;
   background:#000;
+  padding:12px;
   font-size:18px;
-  font-weight:bold;
+  font-weight:700;
+}
+#controls{
+  margin:10px;
+}
+input,button{
+  font-size:16px;
+  padding:6px 12px;
+  margin:4px;
 }
 #wrap{
   position:relative;
   display:inline-block;
+  margin-top:10px;
 }
-video, canvas{
+video{
   max-width:100%;
+  background:#000;
 }
 canvas{
   position:absolute;
   left:0;
   top:0;
 }
-.controls{
-  margin:10px;
-}
-button{
-  font-size:16px;
-  padding:8px 14px;
-  margin:5px;
-}
-.notice{
+#status{
   font-size:14px;
+  margin-top:6px;
   color:#ffcc00;
+}
+.stop{
+  color:#ff5555;
+  font-weight:bold;
 }
 </style>
 
-<!-- MediaPipe CDN -->
+<!-- MediaPipe Face Detection -->
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
 </head>
 
 <body>
 
 <header>현장 비식별화 얼굴 모자이크</header>
 
-<div class="controls">
+<div id="controls">
   <input type="file" id="videoInput" accept="video/*">
-  <button onclick="resetTracking()">재지정</button>
+  <button id="resetBtn">재지정</button>
 </div>
 
-<div class="notice">
-  ※ 얼굴이 겹치면 자동 정지 → 재지정 필요
-</div>
+<div id="status">※ 얼굴이 겹치면 자동으로 추적이 중단됩니다</div>
 
 <div id="wrap">
-  <video id="video" controls playsinline></video>
+  <video id="video" controls playsinline muted></video>
   <canvas id="canvas"></canvas>
 </div>
 
 <script>
+/* =======================
+   기본 요소
+======================= */
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
+const statusEl = document.getElementById("status");
+const resetBtn = document.getElementById("resetBtn");
 
 let trackingEnabled = true;
-let lastFaces = [];
 
-// MediaPipe Face Detection
+/* =======================
+   MediaPipe 설정
+======================= */
 const faceDetection = new FaceDetection.FaceDetection({
-  locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`
+  locateFile: (file) =>
+    `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`
 });
 
 faceDetection.setOptions({
@@ -88,71 +99,94 @@ faceDetection.setOptions({
 
 faceDetection.onResults(onResults);
 
-// 비디오 업로드
-document.getElementById("videoInput").addEventListener("change", e => {
+/* =======================
+   영상 업로드
+======================= */
+document.getElementById("videoInput").addEventListener("change", (e) => {
   const file = e.target.files[0];
   if (!file) return;
+
   video.src = URL.createObjectURL(file);
-  video.play();
+
+  video.onloadedmetadata = () => {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    video.play().catch(() => {
+      alert(
+        "영상 재생 실패\n\n" +
+        "휴대폰 영상이 HEVC(H.265) 코덱일 가능성이 큽니다.\n" +
+        "카메라 설정을 '높은 호환성(H.264)'으로 변경 후 다시 촬영하세요."
+      );
+    });
+  };
 });
 
-// 프레임 처리
+/* =======================
+   재생 루프
+======================= */
 video.addEventListener("play", () => {
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
+  trackingEnabled = true;
+  statusEl.textContent = "※ 얼굴이 겹치면 자동으로 추적이 중단됩니다";
   requestAnimationFrame(processFrame);
 });
 
 async function processFrame(){
   if (video.paused || video.ended) return;
-  await faceDetection.send({image: video});
+  await faceDetection.send({ image: video });
   requestAnimationFrame(processFrame);
 }
 
+/* =======================
+   얼굴 인식 결과 처리
+======================= */
 function onResults(results){
   ctx.clearRect(0,0,canvas.width,canvas.height);
 
   if (!trackingEnabled) return;
-
   if (!results.detections) return;
 
-  // 얼굴이 겹치면 중단
   if (results.detections.length > 1){
     if (facesOverlap(results.detections)){
       trackingEnabled = false;
-      alert("얼굴이 겹쳐 추적 중단\n재지정하세요");
+      statusEl.innerHTML =
+        "<span class='stop'>얼굴 겹침 감지 → 추적 중단 (재지정 필요)</span>";
       return;
     }
   }
 
   results.detections.forEach(det => {
     const box = det.locationData.relativeBoundingBox;
+
     const x = box.xMin * canvas.width;
     const y = box.yMin * canvas.height;
     const w = box.width * canvas.width;
     const h = box.height * canvas.height;
 
-    mosaic(x,y,w,h);
+    applyMosaic(x, y, w, h);
   });
-
-  lastFaces = results.detections;
 }
 
-// 모자이크 함수
-function mosaic(x,y,w,h){
-  const size = 12;
-  ctx.drawImage(video, x,y,w,h, x,y,size,size);
+/* =======================
+   모자이크 처리
+======================= */
+function applyMosaic(x, y, w, h){
+  const block = 14;
+
+  ctx.drawImage(video, x, y, w, h, x, y, block, block);
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(canvas, x,y,size,size, x,y,w,h);
+  ctx.drawImage(canvas, x, y, block, block, x, y, w, h);
   ctx.imageSmoothingEnabled = true;
 }
 
-// 얼굴 겹침 판단
-function facesOverlap(detections){
-  if (detections.length < 2) return false;
+/* =======================
+   얼굴 겹침 판정
+======================= */
+function facesOverlap(dets){
+  if (dets.length < 2) return false;
 
-  const a = detections[0].locationData.relativeBoundingBox;
-  const b = detections[1].locationData.relativeBoundingBox;
+  const a = dets[0].locationData.relativeBoundingBox;
+  const b = dets[1].locationData.relativeBoundingBox;
 
   return !(
     a.xMin + a.width < b.xMin ||
@@ -162,10 +196,13 @@ function facesOverlap(detections){
   );
 }
 
-// 재지정
-function resetTracking(){
+/* =======================
+   재지정 버튼
+======================= */
+resetBtn.addEventListener("click", () => {
   trackingEnabled = true;
-}
+  statusEl.textContent = "※ 얼굴이 겹치면 자동으로 추적이 중단됩니다";
+});
 </script>
 
 </body>
