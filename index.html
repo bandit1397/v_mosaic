@@ -32,10 +32,13 @@ input,button{
   display:inline-block;
 }
 video{
-  display:none; /* 실제 화면은 canvas만 사용 */
+  display:block;
+  max-width:100%;
 }
 canvas{
-  background:#000;
+  position:absolute;
+  left:0;
+  top:0;
 }
 #status{
   font-size:14px;
@@ -63,20 +66,19 @@ canvas{
 <div id="status">※ 얼굴이 겹치면 자동 중단</div>
 
 <div id="wrap">
+  <video id="video" controls muted playsinline></video>
   <canvas id="canvas"></canvas>
 </div>
 
 <script>
-const video = document.createElement("video");
-video.muted = true;
-video.playsInline = true;
-
+const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 const statusEl = document.getElementById("status");
 const resetBtn = document.getElementById("resetBtn");
 
 let trackingEnabled = true;
+let processing = false;
 
 /* MediaPipe */
 const faceDetection = new FaceDetection.FaceDetection({
@@ -91,33 +93,46 @@ faceDetection.setOptions({
 
 faceDetection.onResults(onResults);
 
-/* 영상 선택 */
+/* 파일 선택 */
 document.getElementById("videoInput").addEventListener("change", e => {
   const file = e.target.files[0];
   if (!file) return;
 
   video.src = URL.createObjectURL(file);
-
-  video.onloadedmetadata = () => {
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    video.play();
-    requestAnimationFrame(processFrame);
-  };
+  video.load();
 });
 
-/* 프레임 루프 */
-async function processFrame(){
-  if (video.paused || video.ended) return;
-  await faceDetection.send({ image: video });
-  requestAnimationFrame(processFrame);
-}
+/* 메타데이터 로드 후 */
+video.addEventListener("loadeddata", () => {
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
 
-/* 결과 처리 */
-function onResults(results){
-  /* 🔑 핵심: 원본 프레임 먼저 그리기 */
+  video.play().then(() => {
+    processing = true;
+    drawLoop();
+  }).catch(err => {
+    alert("영상 재생 실패\n(코덱 문제 가능성)");
+  });
+});
+
+/* 프레임 루프 (PC 최적) */
+function drawLoop(){
+  if (!processing || video.paused || video.ended) return;
+
+  /* 🔑 반드시 먼저 원본 프레임 그리기 */
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
+  faceDetection.send({ image: video });
+
+  if ("requestVideoFrameCallback" in video){
+    video.requestVideoFrameCallback(drawLoop);
+  } else {
+    requestAnimationFrame(drawLoop);
+  }
+}
+
+/* 얼굴 결과 */
+function onResults(results){
   if (!trackingEnabled) return;
   if (!results.detections) return;
 
