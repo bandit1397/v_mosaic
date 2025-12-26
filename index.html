@@ -10,7 +10,7 @@ body{
   margin:0;
   background:#111;
   color:#fff;
-  font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI";
+  font-family:system-ui,-apple-system,"Segoe UI";
   text-align:center;
 }
 header{
@@ -30,16 +30,12 @@ input,button{
 #wrap{
   position:relative;
   display:inline-block;
-  margin-top:10px;
 }
 video{
-  max-width:100%;
-  background:#000;
+  display:none; /* 실제 화면은 canvas만 사용 */
 }
 canvas{
-  position:absolute;
-  left:0;
-  top:0;
+  background:#000;
 }
 #status{
   font-size:14px;
@@ -52,7 +48,6 @@ canvas{
 }
 </style>
 
-<!-- MediaPipe Face Detection -->
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js"></script>
 </head>
 
@@ -65,18 +60,17 @@ canvas{
   <button id="resetBtn">재지정</button>
 </div>
 
-<div id="status">※ 얼굴이 겹치면 자동으로 추적이 중단됩니다</div>
+<div id="status">※ 얼굴이 겹치면 자동 중단</div>
 
 <div id="wrap">
-  <video id="video" controls playsinline muted></video>
   <canvas id="canvas"></canvas>
 </div>
 
 <script>
-/* =======================
-   기본 요소
-======================= */
-const video = document.getElementById("video");
+const video = document.createElement("video");
+video.muted = true;
+video.playsInline = true;
+
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 const statusEl = document.getElementById("status");
@@ -84,11 +78,9 @@ const resetBtn = document.getElementById("resetBtn");
 
 let trackingEnabled = true;
 
-/* =======================
-   MediaPipe 설정
-======================= */
+/* MediaPipe */
 const faceDetection = new FaceDetection.FaceDetection({
-  locateFile: (file) =>
+  locateFile: file =>
     `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`
 });
 
@@ -99,10 +91,8 @@ faceDetection.setOptions({
 
 faceDetection.onResults(onResults);
 
-/* =======================
-   영상 업로드
-======================= */
-document.getElementById("videoInput").addEventListener("change", (e) => {
+/* 영상 선택 */
+document.getElementById("videoInput").addEventListener("change", e => {
   const file = e.target.files[0];
   if (!file) return;
 
@@ -111,83 +101,56 @@ document.getElementById("videoInput").addEventListener("change", (e) => {
   video.onloadedmetadata = () => {
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-
-    video.play().catch(() => {
-      alert(
-        "영상 재생 실패\n\n" +
-        "휴대폰 영상이 HEVC(H.265) 코덱일 가능성이 큽니다.\n" +
-        "카메라 설정을 '높은 호환성(H.264)'으로 변경 후 다시 촬영하세요."
-      );
-    });
+    video.play();
+    requestAnimationFrame(processFrame);
   };
 });
 
-/* =======================
-   재생 루프
-======================= */
-video.addEventListener("play", () => {
-  trackingEnabled = true;
-  statusEl.textContent = "※ 얼굴이 겹치면 자동으로 추적이 중단됩니다";
-  requestAnimationFrame(processFrame);
-});
-
+/* 프레임 루프 */
 async function processFrame(){
   if (video.paused || video.ended) return;
   await faceDetection.send({ image: video });
   requestAnimationFrame(processFrame);
 }
 
-/* =======================
-   얼굴 인식 결과 처리
-======================= */
+/* 결과 처리 */
 function onResults(results){
-  ctx.clearRect(0,0,canvas.width,canvas.height);
+  /* 🔑 핵심: 원본 프레임 먼저 그리기 */
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
   if (!trackingEnabled) return;
   if (!results.detections) return;
 
-  if (results.detections.length > 1){
-    if (facesOverlap(results.detections)){
-      trackingEnabled = false;
-      statusEl.innerHTML =
-        "<span class='stop'>얼굴 겹침 감지 → 추적 중단 (재지정 필요)</span>";
-      return;
-    }
+  if (results.detections.length > 1 && facesOverlap(results.detections)){
+    trackingEnabled = false;
+    statusEl.innerHTML =
+      "<span class='stop'>얼굴 겹침 감지 → 추적 중단</span>";
+    return;
   }
 
   results.detections.forEach(det => {
     const box = det.locationData.relativeBoundingBox;
-
     const x = box.xMin * canvas.width;
     const y = box.yMin * canvas.height;
     const w = box.width * canvas.width;
     const h = box.height * canvas.height;
-
-    applyMosaic(x, y, w, h);
+    applyMosaic(x,y,w,h);
   });
 }
 
-/* =======================
-   모자이크 처리
-======================= */
-function applyMosaic(x, y, w, h){
-  const block = 14;
-
-  ctx.drawImage(video, x, y, w, h, x, y, block, block);
+/* 모자이크 */
+function applyMosaic(x,y,w,h){
+  const size = 14;
+  ctx.drawImage(canvas, x,y,w,h, x,y,size,size);
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(canvas, x, y, block, block, x, y, w, h);
+  ctx.drawImage(canvas, x,y,size,size, x,y,w,h);
   ctx.imageSmoothingEnabled = true;
 }
 
-/* =======================
-   얼굴 겹침 판정
-======================= */
-function facesOverlap(dets){
-  if (dets.length < 2) return false;
-
-  const a = dets[0].locationData.relativeBoundingBox;
-  const b = dets[1].locationData.relativeBoundingBox;
-
+/* 겹침 판정 */
+function facesOverlap(d){
+  const a = d[0].locationData.relativeBoundingBox;
+  const b = d[1].locationData.relativeBoundingBox;
   return !(
     a.xMin + a.width < b.xMin ||
     b.xMin + b.width < a.xMin ||
@@ -196,13 +159,11 @@ function facesOverlap(dets){
   );
 }
 
-/* =======================
-   재지정 버튼
-======================= */
-resetBtn.addEventListener("click", () => {
+/* 재지정 */
+resetBtn.onclick = () => {
   trackingEnabled = true;
-  statusEl.textContent = "※ 얼굴이 겹치면 자동으로 추적이 중단됩니다";
-});
+  statusEl.textContent = "※ 얼굴이 겹치면 자동 중단";
+};
 </script>
 
 </body>
