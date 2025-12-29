@@ -1,0 +1,121 @@
+import cv2
+import sys
+import numpy as np
+
+# 설정
+video_path = "input.mp4"
+output_path = "output_mosaic.mp4"
+
+# 1. 원본 영상 로드
+cap = cv2.VideoCapture(video_path)
+origin_frames = []
+fps = cap.get(cv2.CAP_PROP_FPS)
+if fps <= 0: fps = 30
+
+print("영상 데이터를 로딩 중입니다...")
+while True:
+    ret, f = cap.read()
+    if not ret: break
+    origin_frames.append(f)
+cap.release()
+
+total_frames = len(origin_frames)
+h, w, _ = origin_frames[0].shape
+
+# [핵심] 작업용 캔버스: 처음에는 원본과 같지만, 편집할수록 실시간 업데이트됨
+processed_frames = [f.copy() for f in origin_frames]
+
+# 상태 변수
+current_idx = 0
+paused = True
+trackers = []
+window_name = "Mosaic Multi-Pass Editor"
+
+def on_trackbar(val):
+    global current_idx
+    current_idx = val
+
+def mosaic_safe(img, roi_rect):
+    x, y, rw, rh = map(int, roi_rect)
+    x, y, rw, rh = int(x), int(y), int(rw), int(rh)
+    x, y = max(0, x), max(0, y)
+    rw = min(rw, img.shape[1] - x)
+    rh = min(rh, img.shape[0] - y)
+    if rw <= 0 or rh <= 0: return img
+    roi_zone = img[y:y+rh, x:x+rw]
+    # 15배 축소 후 확대 (interpolation은 가장 가까운 이웃 방식)
+    small = cv2.resize(roi_zone, (max(1, rw//15), max(1, rh//15)))
+    img[y:y+rh, x:x+rw] = cv2.resize(small, (rw, rh), interpolation=cv2.INTER_NEAREST)
+    return img
+
+# 창 및 타임라인 생성
+cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+cv2.createTrackbar("Timeline", window_name, 0, total_frames - 1, on_trackbar)
+
+print("\n" + "="*50)
+print("누적 편집 모드 활성화")
+print("1. 슬라이더로 모자이크가 안 된 시점으로 이동하세요.")
+print("2. 'S'를 눌러 대상을 지정하세요.")
+print("3. Space를 눌러 재생하면 해당 구간이 '업데이트' 됩니다.")
+print("4. 다시 슬라이더를 돌려 다른 빈 곳을 찾아 작업하세요.")
+print("5. ESC를 누르면 모든 편집 내용이 합쳐져 최종 저장됩니다.")
+print("="*50)
+
+while True:
+    # 현재 타임라인의 편집된 프레임을 보여줌
+    display_frame = processed_frames[current_idx].copy()
+    
+    # 재생 중일 때: 현재 활성화된 트래커가 있다면 편집본 업데이트
+    if not paused:
+        if trackers:
+            # 트래킹은 항상 깨끗한 원본(origin_frames)에서 위치를 계산
+            temp_frame = origin_frames[current_idx].copy()
+            for t in trackers:
+                ok, roi = t.update(origin_frames[current_idx])
+                if ok:
+                    # 원본에서 찾은 위치를 바탕으로 '작업본'에 모자이크를 입힘
+                    processed_frames[current_idx] = mosaic_safe(processed_frames[current_idx], roi)
+            
+            display_frame = processed_frames[current_idx]
+        
+        # 다음 프레임으로 이동
+        if current_idx < total_frames - 1:
+            current_idx += 1
+        else:
+            paused = True
+
+    # 화면 표시 및 슬라이더 위치 동기화
+    cv2.imshow(window_name, display_frame)
+    cv2.setTrackbarPos("Timeline", window_name, current_idx)
+
+    key = cv2.waitKey(20) & 0xFF
+
+    if key == 27: # ESC: 최종 저장
+        break
+    elif key == ord(' '): # Space: 재생/일시정지
+        paused = not paused
+    elif key == ord('s'): # S: 새로운 ROI 지정 (이 시점부터 덮어쓰기 시작)
+        # 현재 화면(편집된 화면)을 보여주며 영역 선택
+        new_rois = cv2.selectROIs("Select Target", processed_frames[current_idx], False, False)
+        if len(new_rois) > 0:
+            trackers = []
+            for r in new_rois:
+                tr = cv2.TrackerCSRT_create()
+                tr.init(origin_frames[current_idx], tuple(r))
+                trackers.append(tr)
+            print(f">> {current_idx}프레임부터 새로운 추적 시작")
+        cv2.destroyWindow("Select Target")
+    elif key == ord('a'): # 미세 후퇴
+        current_idx = max(0, current_idx - 1)
+    elif key == ord('d'): # 미세 전진
+        current_idx = min(total_frames - 1, current_idx + 1)
+
+# 저장 단계
+print("\n[저장] 모든 편집 내용을 비디오 파일로 병합 중...")
+out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+for i in range(total_frames):
+    out.write(processed_frames[i])
+out.release()
+
+cv2.destroyAllWindows()
+print(f"성공적으로 저장되었습니다: {output_path}")
