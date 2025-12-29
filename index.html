@@ -1,185 +1,55 @@
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-<meta charset="UTF-8">
-<title>현장용 얼굴 모자이크 (PC / GitHub Pages)</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+import cv2
 
-<style>
-body{
-  margin:0;
-  background:#111;
-  color:#fff;
-  font-family:system-ui,-apple-system,"Segoe UI";
-  text-align:center;
-}
-header{
-  background:#000;
-  padding:12px;
-  font-size:18px;
-  font-weight:700;
-}
-#controls{
-  margin:10px;
-}
-input,button{
-  font-size:16px;
-  padding:6px 12px;
-  margin:4px;
-}
-#wrap{
-  position:relative;
-  display:inline-block;
-}
-video{
-  display:block;
-  max-width:100%;
-}
-canvas{
-  position:absolute;
-  left:0;
-  top:0;
-}
-#status{
-  font-size:14px;
-  margin-top:6px;
-  color:#ffcc00;
-}
-.stop{
-  color:#ff5555;
-  font-weight:bold;
-}
-</style>
+video_path = "input.mp4"
+output_path = "output_mosaic.mp4"
 
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js"></script>
-</head>
+cap = cv2.VideoCapture(video_path)
+ret, frame = cap.read()
+if not ret:
+    print("영상 로드 실패")
+    exit()
 
-<body>
+# ROI 선택
+roi = cv2.selectROI("Select Face (ENTER)", frame, False)
+cv2.destroyWindow("Select Face (ENTER)")
 
-<header>현장 비식별화 얼굴 모자이크</header>
+# 추적기 생성
+tracker = cv2.TrackerCSRT_create()
+tracker.init(frame, roi)
 
-<div id="controls">
-  <input type="file" id="videoInput" accept="video/*">
-  <button id="resetBtn">재지정</button>
-</div>
+# 비디오 저장 설정
+fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+out = cv2.VideoWriter(
+    output_path,
+    fourcc,
+    cap.get(cv2.CAP_PROP_FPS),
+    (frame.shape[1], frame.shape[0])
+)
 
-<div id="status">※ 얼굴이 겹치면 자동 중단</div>
+def mosaic(img, r, size=15):
+    x,y,w,h = map(int, r)
+    roi = img[y:y+h, x:x+w]
+    if roi.size == 0:
+        return img
+    roi = cv2.resize(roi, (w//size, h//size))
+    roi = cv2.resize(roi, (w, h), interpolation=cv2.INTER_NEAREST)
+    img[y:y+h, x:x+w] = roi
+    return img
 
-<div id="wrap">
-  <video id="video" controls muted playsinline></video>
-  <canvas id="canvas"></canvas>
-</div>
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
 
-<script>
-const video = document.getElementById("video");
-const canvas = document.getElementById("canvas");
-const ctx = canvas.getContext("2d");
-const statusEl = document.getElementById("status");
-const resetBtn = document.getElementById("resetBtn");
+    ok, roi = tracker.update(frame)
+    if ok:
+        frame = mosaic(frame, roi)
 
-let trackingEnabled = true;
-let processing = false;
+    out.write(frame)
+    cv2.imshow("Mosaic Tracking", frame)
+    if cv2.waitKey(1) & 0xFF == 27:
+        break
 
-/* MediaPipe */
-const faceDetection = new FaceDetection.FaceDetection({
-  locateFile: file =>
-    `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`
-});
-
-faceDetection.setOptions({
-  model: "short",
-  minDetectionConfidence: 0.6
-});
-
-faceDetection.onResults(onResults);
-
-/* 파일 선택 */
-document.getElementById("videoInput").addEventListener("change", e => {
-  const file = e.target.files[0];
-  if (!file) return;
-
-  video.src = URL.createObjectURL(file);
-  video.load();
-});
-
-/* 메타데이터 로드 후 */
-video.addEventListener("loadeddata", () => {
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
-
-  video.play().then(() => {
-    processing = true;
-    drawLoop();
-  }).catch(err => {
-    alert("영상 재생 실패\n(코덱 문제 가능성)");
-  });
-});
-
-/* 프레임 루프 (PC 최적) */
-function drawLoop(){
-  if (!processing || video.paused || video.ended) return;
-
-  /* 🔑 반드시 먼저 원본 프레임 그리기 */
-  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-  faceDetection.send({ image: video });
-
-  if ("requestVideoFrameCallback" in video){
-    video.requestVideoFrameCallback(drawLoop);
-  } else {
-    requestAnimationFrame(drawLoop);
-  }
-}
-
-/* 얼굴 결과 */
-function onResults(results){
-  if (!trackingEnabled) return;
-  if (!results.detections) return;
-
-  if (results.detections.length > 1 && facesOverlap(results.detections)){
-    trackingEnabled = false;
-    statusEl.innerHTML =
-      "<span class='stop'>얼굴 겹침 감지 → 추적 중단</span>";
-    return;
-  }
-
-  results.detections.forEach(det => {
-    const box = det.locationData.relativeBoundingBox;
-    const x = box.xMin * canvas.width;
-    const y = box.yMin * canvas.height;
-    const w = box.width * canvas.width;
-    const h = box.height * canvas.height;
-    applyMosaic(x,y,w,h);
-  });
-}
-
-/* 모자이크 */
-function applyMosaic(x,y,w,h){
-  const size = 14;
-  ctx.drawImage(canvas, x,y,w,h, x,y,size,size);
-  ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(canvas, x,y,size,size, x,y,w,h);
-  ctx.imageSmoothingEnabled = true;
-}
-
-/* 겹침 판정 */
-function facesOverlap(d){
-  const a = d[0].locationData.relativeBoundingBox;
-  const b = d[1].locationData.relativeBoundingBox;
-  return !(
-    a.xMin + a.width < b.xMin ||
-    b.xMin + b.width < a.xMin ||
-    a.yMin + a.height < b.yMin ||
-    b.yMin + b.height < a.yMin
-  );
-}
-
-/* 재지정 */
-resetBtn.onclick = () => {
-  trackingEnabled = true;
-  statusEl.textContent = "※ 얼굴이 겹치면 자동 중단";
-};
-</script>
-
-</body>
-</html>
+cap.release()
+out.release()
+cv2.destroyAllWindows()
