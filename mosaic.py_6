@@ -30,7 +30,9 @@ current_idx = 0
 paused = True
 drawing = False
 
-trackers = []  # {"roi": (x,y,w,h)}
+# tracker 구조:
+# {"roi": (x,y,w,h), "start": frame_idx, "end": frame_idx or None}
+trackers = []
 
 start_x, start_y = 0, 0
 
@@ -54,11 +56,12 @@ def apply_mosaic(frame, roi):
     return frame
 
 
-def redraw_from(idx):
-    for f in range(idx, total_frames):
+def redraw_all():
+    for f in range(total_frames):
         processed_frames[f] = origin_frames[f].copy()
         for t in trackers:
-            processed_frames[f] = apply_mosaic(processed_frames[f], t["roi"])
+            if t["start"] <= f and (t["end"] is None or f <= t["end"]):
+                processed_frames[f] = apply_mosaic(processed_frames[f], t["roi"])
 
 
 # =============================
@@ -90,15 +93,19 @@ def mouse_callback(event, x, y, flags, param):
         rh = abs(y - start_y)
 
         if rw > 10 and rh > 10:
-            trackers.append({"roi": (rx, ry, rw, rh)})
-            redraw_from(current_idx)
+            trackers.append({
+                "roi": (rx, ry, rw, rh),
+                "start": current_idx,
+                "end": None
+            })
+            redraw_all()
 
     elif paused and event == cv2.EVENT_RBUTTONDOWN:
         for i in reversed(range(len(trackers))):
             rx, ry, rw, rh = trackers[i]["roi"]
             if rx <= x <= rx+rw and ry <= y <= ry+rh:
                 trackers.pop(i)
-                redraw_from(current_idx)
+                redraw_all()
                 break
 
 
@@ -112,8 +119,9 @@ while True:
 
     if paused:
         for t in trackers:
-            x, y, w, h = t["roi"]
-            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+            if t["start"] <= current_idx and (t["end"] is None or current_idx <= t["end"]):
+                x, y, w, h = t["roi"]
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
 
     cv2.imshow(WINDOW, frame)
     cv2.setTrackbarPos(TRACKBAR, WINDOW, current_idx)
@@ -121,11 +129,24 @@ while True:
     key = cv2.waitKey(int(1000 / fps)) & 0xFF
 
     if key == ord('q'):
+        # 🔒 종료 시점 = 현재 프레임
+        for t in trackers:
+            if t["end"] is None:
+                t["end"] = current_idx
+        redraw_all()
         break
 
     elif key == ord('a'):
         paused = not paused
         print("PAUSE" if paused else "PLAY")
+
+    elif key == ord('s'):
+        # 🔒 현재 프레임에서 모든 열린 ROI 종료
+        for t in trackers:
+            if t["end"] is None:
+                t["end"] = current_idx
+        redraw_all()
+        print(f"ROI 종료 고정 프레임: {current_idx}")
 
     if not paused:
         current_idx += 1
@@ -137,7 +158,18 @@ cv2.destroyAllWindows()
 # =============================
 # 결과 영상 저장
 # =============================
+# =============================
+# 결과 영상 저장
+# =============================
 if total_frames > 0:
+
+    # 🔒 저장 시점 기준 ROI 강제 종료 (이중 안전)
+    for t in trackers:
+        if t["end"] is None:
+            t["end"] = current_idx
+
+    redraw_all()
+
     h, w, _ = processed_frames[0].shape
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     out = cv2.VideoWriter(OUTPUT_VIDEO, fourcc, fps, (w, h))
@@ -146,4 +178,5 @@ if total_frames > 0:
         out.write(f)
 
     out.release()
-    print("✅ 누적 모자이크 영상 저장 완료:", OUTPUT_VIDEO)
+    print("✅ 저장 시점 이후 프레임에 모자이크 없음:", OUTPUT_VIDEO)
+
