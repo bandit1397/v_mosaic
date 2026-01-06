@@ -1,0 +1,109 @@
+import cv2
+
+video_path = "input.mp4"
+cap = cv2.VideoCapture(video_path)
+
+origin_frames = []
+processed_frames = []
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+    origin_frames.append(frame.copy())
+    processed_frames.append(frame.copy())
+
+cap.release()
+
+total_frames = len(origin_frames)
+current_idx = 0
+paused = False
+drawing = False
+
+trackers = []  # {"roi": (x,y,w,h)}
+
+start_x, start_y = 0, 0
+
+WINDOW = "STICKY ROI MOSAIC EDITOR"
+cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
+
+
+def apply_mosaic(frame, roi):
+    x, y, w, h = roi
+    if w <= 0 or h <= 0:
+        return frame
+    sub = frame[y:y+h, x:x+w]
+    if sub.size == 0:
+        return frame
+    small = cv2.resize(sub, (max(1, w//10), max(1, h//10)))
+    mosaic = cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
+    frame[y:y+h, x:x+w] = mosaic
+    return frame
+
+
+def redraw_from(idx):
+    """현재 프레임부터 끝까지 다시 그림"""
+    for f in range(idx, total_frames):
+        processed_frames[f] = origin_frames[f].copy()
+        for t in trackers:
+            processed_frames[f] = apply_mosaic(processed_frames[f], t["roi"])
+
+
+def mouse_callback(event, x, y, flags, param):
+    global start_x, start_y, drawing, trackers
+
+    if event == cv2.EVENT_LBUTTONDOWN and paused:
+        drawing = True
+        start_x, start_y = x, y
+
+    elif event == cv2.EVENT_LBUTTONUP and paused and drawing:
+        drawing = False
+        rx = min(start_x, x)
+        ry = min(start_y, y)
+        rw = abs(x - start_x)
+        rh = abs(y - start_y)
+        if rw > 10 and rh > 10:
+            trackers.append({"roi": (rx, ry, rw, rh)})
+            redraw_from(current_idx)
+
+    elif event == cv2.EVENT_RBUTTONDOWN and paused:
+        for i in reversed(range(len(trackers))):
+            rx, ry, rw, rh = trackers[i]["roi"]
+            if rx <= x <= rx+rw and ry <= y <= ry+rh:
+                print("[ROI 삭제]", trackers[i]["roi"])
+                trackers.pop(i)
+                redraw_from(current_idx)
+                break
+
+
+cv2.setMouseCallback(WINDOW, mouse_callback)
+
+while True:
+    frame = processed_frames[current_idx].copy()
+
+    # ROI 테두리 표시
+    if paused:
+        for t in trackers:
+            x, y, w, h = t["roi"]
+            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+
+    cv2.imshow(WINDOW, frame)
+
+    key = cv2.waitKey(30) & 0xFF
+
+    if key == ord('q'):
+        break
+
+    elif key == ord('a'):
+        paused = not paused
+        print("PAUSE" if paused else "PLAY")
+
+    elif key == ord('s') and paused:
+        print("ROI 추가 모드")
+
+    if not paused:
+        current_idx += 1
+        if current_idx >= total_frames:
+            break
+
+cv2.destroyAllWindows()
