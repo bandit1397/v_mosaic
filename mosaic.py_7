@@ -1,0 +1,216 @@
+import cv2
+import os
+
+# =============================
+# 파일 설정
+# =============================
+INPUT_VIDEO = "input.mp4"
+OUTPUT_VIDEO = "output_mosaic.mp4"
+
+video_path = OUTPUT_VIDEO if os.path.exists(OUTPUT_VIDEO) else INPUT_VIDEO
+print("작업 기준 영상:", video_path)
+
+cap = cv2.VideoCapture(video_path)
+fps = cap.get(cv2.CAP_PROP_FPS) or 30
+
+origin_frames = []
+processed_frames = []
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+    origin_frames.append(frame.copy())
+    processed_frames.append(frame.copy())
+
+cap.release()
+
+total_frames = len(origin_frames)
+current_idx = 0
+paused = True
+drawing = False
+moving_roi_index = None
+move_offset_x = 0
+move_offset_y = 0
+
+# tracker 구조:
+# {"roi": (x,y,w,h), "start": frame_idx, "end": frame_idx or None, "tracker": KCF tracker 객체}
+trackers = []
+
+start_x, start_y = 0, 0
+
+WINDOW = "STICKY ROI MOSAIC EDITOR"
+TRACKBAR = "FRAME"
+cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
+
+# =============================
+# 모자이크 함수
+# =============================
+def apply_mosaic(frame, roi):
+    x, y, w, h = map(int, roi)
+    if w <= 0 or h <= 0:
+        return frame
+    sub = frame[y:y+h, x:x+w]
+    if sub.size == 0:
+        return frame
+    small = cv2.resize(sub, (max(1, w//10), max(1, h//10)))
+    mosaic = cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
+    frame[y:y+h, x:x+w] = mosaic
+    return frame
+
+# =============================
+# 현재 프레임만 다시 그리기 (속도 개선)
+# =============================
+def redraw_current():
+    global processed_frames, current_idx
+    processed_frames[current_idx] = origin_frames[current_idx].copy()
+    for t in trackers:
+        if t["start"] <= current_idx and (t["end"] is None or current_idx <= t["end"]):
+            processed_frames[current_idx] = apply_mosaic(processed_frames[current_idx], t["roi"])
+
+# =============================
+# 트랙바 콜백
+# =============================
+def on_trackbar(pos):
+    global current_idx, paused
+    paused = True
+    current_idx = pos
+    redraw_current()
+
+cv2.createTrackbar(TRACKBAR, WINDOW, 0, total_frames - 1, on_trackbar)
+
+# =============================
+# 마우스 이벤트
+# =============================
+def mouse_callback(event, x, y, flags, param):
+    global start_x, start_y, drawing
+    global moving_roi_index, move_offset_x, move_offset_y
+
+    if paused:
+        if event == cv2.EVENT_LBUTTONDOWN:
+            # ROI 이동 우선 체크
+            for i, t in reversed(list(enumerate(trackers))):
+                rx, ry, rw, rh = t["roi"]
+                if rx <= x <= rx+rw and ry <= y <= ry+rh:
+                    moving_roi_index = i
+                    move_offset_x = x - rx
+                    move_offset_y = y - ry
+                    return
+
+            # 새 ROI 그리기
+            drawing = True
+            start_x, start_y = x, y
+
+        elif event == cv2.EVENT_MOUSEMOVE:
+            if moving_roi_index is not None:
+                # ROI 이동
+                rx, ry, rw, rh = trackers[moving_roi_index]["roi"]
+                new_x = x - move_offset_x
+                new_y = y - move_offset_y
+                trackers[moving_roi_index]["roi"] = (new_x, new_y, rw, rh)
+                redraw_current()
+
+        elif event == cv2.EVENT_LBUTTONUP:
+            if drawing:
+                drawing = False
+                rx = min(start_x, x)
+                ry = min(start_y, y)
+                rw = abs(x - start_x)
+                rh = abs(y - start_y)
+                if rw > 10 and rh > 10:
+                    kcf = cv2.legacy.TrackerKCF_create()
+                    kcf.init(origin_frames[current_idx], (rx, ry, rw, rh))
+                    trackers.append({
+                        "roi": (rx, ry, rw, rh),
+                        "start": current_idx,
+                        "end": None,
+                        "tracker": kcf
+                    })
+                    redraw_current()
+            moving_roi_index = None
+
+        elif event == cv2.EVENT_RBUTTONDOWN:
+            for i in reversed(range(len(trackers))):
+                rx, ry, rw, rh = trackers[i]["roi"]
+                if rx <= x <= rx+rw and ry <= y <= ry+rh:
+                    trackers.pop(i)
+                    redraw_current()
+                    break
+
+cv2.setMouseCallback(WINDOW, mouse_callback)
+
+# =============================
+# 메인 루프
+# =============================
+while True:
+    # ROI 추적 (재생 중)
+    if not paused:
+        for t in trackers:
+            if t["start"] <= current_idx and (t["end"] is None or current_idx <= t["end"]):
+                if t["tracker"] is not None:
+                    success, box = t["tracker"].update(origin_frames[current_idx])
+                    if success:
+                        t["roi"] = box
+        redraw_current()
+
+    frame = processed_frames[current_idx].copy()
+
+    # ROI 테두리 표시
+    if paused:
+        for t in trackers:
+            if t["start"] <= current_idx and (t["end"] is None or current_idx <= t["end"]):
+                x, y, w, h = map(int, t["roi"])
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+
+    cv2.imshow(WINDOW, frame)
+    cv2.setTrackbarPos(TRACKBAR, WINDOW, current_idx)
+
+    key = cv2.waitKey(int(1000 / fps)) & 0xFF
+
+    if key == ord('q'):
+        # 종료 시점 ROI 강제 종료
+        for t in trackers:
+            if t["end"] is None:
+                t["end"] = current_idx
+        redraw_current()
+        break
+    elif key == ord('a'):
+        paused = not paused
+        print("PAUSE" if paused else "PLAY")
+    elif key == ord('s'):
+        # 현재 프레임에서 모든 열린 ROI 종료
+        for t in trackers:
+            if t["end"] is None:
+                t["end"] = current_idx
+        redraw_current()
+        print(f"ROI 종료 고정 프레임: {current_idx}")
+
+    if not paused:
+        current_idx += 1
+        if current_idx >= total_frames:
+            break
+
+cv2.destroyAllWindows()
+
+# =============================
+# 결과 영상 저장
+# =============================
+if total_frames > 0:
+    for t in trackers:
+        if t["end"] is None:
+            t["end"] = current_idx
+
+    # 전체 프레임에 대해 모자이크 적용
+    for f in range(total_frames):
+        processed_frames[f] = origin_frames[f].copy()
+        for t in trackers:
+            if t["start"] <= f and (t["end"] is None or f <= t["end"]):
+                processed_frames[f] = apply_mosaic(processed_frames[f], t["roi"])
+
+    h, w, _ = processed_frames[0].shape
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out = cv2.VideoWriter(OUTPUT_VIDEO, fourcc, fps, (w, h))
+    for f in processed_frames:
+        out.write(f)
+    out.release()
+    print("✅ 저장 완료:", OUTPUT_VIDEO)
