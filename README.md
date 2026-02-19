@@ -6,7 +6,7 @@ C:\Users\owner\Desktop\v_mosaic\input.mp4
 python.3.11.
 C:\Users\owner\Desktop\v_mosaic>pip list
 Package                   Version
-------------------------- -----------
+ 
 albucore                  0.0.24
 albumentations            2.0.8
 altair                    5.5.0
@@ -104,4 +104,4 @@ urllib3                   2.5.0
 watchdog                  6.0.0
 wcwidth                   0.6.0
 Werkzeug                  3.1.5
-======================================================================
+ 
