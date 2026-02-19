@@ -1,7 +1,7 @@
 # mosaic.py_9
 python 3.10.11/vscode
 C:\Users\owner\Desktop\v_mosaic\input.mp4
-==================================================================
+ 
 # mosaic.py_10
 python.3.11.
 C:\Users\owner\Desktop\v_mosaic>pip list
