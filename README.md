@@ -1,7 +1,9 @@
+# mosaic.py_9
 python 3.10.11/vscode
 C:\Users\owner\Desktop\v_mosaic\input.mp4
-
+==================================================================
 # mosaic.py_10
+python.3.11.
 C:\Users\owner\Desktop\v_mosaic>pip list
 Package                   Version
 ------------------------- -----------
@@ -102,3 +104,4 @@ urllib3                   2.5.0
 watchdog                  6.0.0
 wcwidth                   0.6.0
 Werkzeug                  3.1.5
+======================================================================
