@@ -104,4 +104,9 @@ urllib3                   2.5.0
 watchdog                  6.0.0
 wcwidth                   0.6.0
 Werkzeug                  3.1.5
+
+# mosaic.py 13 pyinstaller
+pyinstaller --onefile --noconsole --collect-all cv2 --hidden-import=cv2.legacy main.py
+dist 폴더 안에 input.mp4 파일을 넣어야 작동된다
+
  
