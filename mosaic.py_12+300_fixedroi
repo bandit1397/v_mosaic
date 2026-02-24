@@ -9,13 +9,8 @@ import time
 INPUT_VIDEO = "input.mp4"
 OUTPUT_VIDEO = "output_mosaic.mp4"
 
-# =============================
-# OUTPUT 우선 로드
-# =============================
-if os.path.exists(OUTPUT_VIDEO):
-    video_path = OUTPUT_VIDEO
-else:
-    video_path = INPUT_VIDEO
+# 항상 INPUT 기준으로 시작 (🔥 중요 수정)
+video_path = INPUT_VIDEO
 
 print("작업 기준 영상:", video_path)
 
@@ -49,14 +44,12 @@ def load_until(target_index):
             origin_frames.append(frame.copy())
             count += 1
 
-# 최초 로드
 load_until(BATCH_SIZE - 1)
 
 if len(origin_frames) == 0:
     print("영상 프레임이 없습니다.")
     sys.exit()
 
-# 전체 프레임 끝까지 읽기
 load_until(10**9)
 real_total_frames = len(origin_frames)
 
@@ -81,8 +74,6 @@ WINDOW = "STICKY ROI MOSAIC EDITOR"
 TRACKBAR = "FRAME"
 
 cv2.namedWindow(WINDOW)
-cv2.setWindowProperty(WINDOW, cv2.WND_PROP_TOPMOST, 1)
-cv2.setWindowProperty(WINDOW, cv2.WND_PROP_TOPMOST, 0)
 
 # =============================
 # 모자이크
@@ -124,7 +115,6 @@ def redraw_current():
     for t in trackers:
         if t["start"] <= current_idx:
 
-            # 🔥 fixed도 end 체크
             if "end" in t and current_idx > t["end"]:
                 continue
 
@@ -140,6 +130,57 @@ def redraw_current():
             frame = apply_mosaic(frame, roi)
 
     return frame
+
+# =============================
+# 🔥 저장 + origin 갱신
+# =============================
+def save_video():
+    global origin_frames, trackers
+
+    print("💾 저장 시작...")
+
+    new_frames = []
+
+    for f in range(real_total_frames):
+
+        frame = origin_frames[f].copy()
+
+        for t in trackers:
+            if t["start"] <= f:
+
+                if "end" in t and f > t["end"]:
+                    continue
+
+                if t["mode"] == "track":
+                    idx = f - t["start"]
+                    if 0 <= idx < len(t["history"]):
+                        roi = t["history"][idx]
+                    else:
+                        continue
+                else:
+                    roi = t["roi"]
+
+                frame = apply_mosaic(frame, roi)
+
+        new_frames.append(frame)
+
+    # 파일 저장
+    h, w, _ = new_frames[0].shape
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out = cv2.VideoWriter(OUTPUT_VIDEO, fourcc, fps, (w, h))
+
+    for f in new_frames:
+        out.write(f)
+
+    out.release()
+
+    # 🔥 핵심: origin을 저장 결과로 교체
+    origin_frames = new_frames
+
+    # 🔥 trackers 초기화 (이미 적용되었으므로)
+    trackers = []
+
+    print("✅ 저장 완료 + 누적 반영 완료")
 
 # =============================
 # 트랙바
@@ -199,7 +240,7 @@ def mouse_callback(event, x, y, flags, param):
                     trackers.append({
                         "roi": (rx, ry, rw, rh),
                         "start": current_idx,
-                        "end": current_idx,  # 🔥 초기 end
+                        "end": current_idx,
                         "mode": "fixed"
                     })
                 else:
@@ -228,8 +269,6 @@ cv2.setMouseCallback(WINDOW, mouse_callback)
 # =============================
 # 메인 루프
 # =============================
-last_processed_frame = 0
-
 while True:
 
     if not paused:
@@ -243,7 +282,6 @@ while True:
 
             if t["start"] <= current_idx:
 
-                # 🔥 fixed end 업데이트
                 if t["mode"] == "fixed":
                     t["end"] = current_idx
 
@@ -255,8 +293,6 @@ while True:
                         if success:
                             t["roi"] = box
                         t["history"].append(t["roi"])
-
-        last_processed_frame = current_idx
 
     frame = redraw_current()
 
@@ -283,51 +319,9 @@ while True:
         paused = not paused
     elif key == ord('f') or key == ord('F'):
         fixed_mode = not fixed_mode
+    elif key == ord('s') or key == ord('S'):
+        save_video()
 
 cv2.destroyAllWindows()
-
-# =============================
-# 저장
-# =============================
 cap.release()
-time.sleep(0.3)
-
-if os.path.exists(OUTPUT_VIDEO):
-    for _ in range(5):
-        try:
-            os.remove(OUTPUT_VIDEO)
-            break
-        except PermissionError:
-            time.sleep(0.3)
-
-h, w, _ = origin_frames[0].shape
-fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-out = cv2.VideoWriter(OUTPUT_VIDEO, fourcc, fps, (w, h))
-
-for f in range(real_total_frames):
-
-    frame = origin_frames[f].copy()
-
-    for t in trackers:
-        if t["start"] <= f:
-
-            # 🔥 fixed end 체크
-            if "end" in t and f > t["end"]:
-                continue
-
-            if t["mode"] == "track":
-                idx = f - t["start"]
-                if 0 <= idx < len(t["history"]):
-                    roi = t["history"][idx]
-                else:
-                    continue
-            else:
-                roi = t["roi"]
-
-            frame = apply_mosaic(frame, roi)
-
-    out.write(frame)
-
-out.release()
-
-print("✅ 전체 프레임 정상 저장 완료:", OUTPUT_VIDEO)
+print("프로그램 종료")
