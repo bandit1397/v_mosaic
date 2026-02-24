@@ -1,6 +1,7 @@
 import cv2
 import os
-import sys 
+import sys
+import time
 
 # =============================
 # 파일 설정
@@ -8,30 +9,55 @@ import sys
 INPUT_VIDEO = "input.mp4"
 OUTPUT_VIDEO = "output_mosaic.mp4"
 
-video_path = OUTPUT_VIDEO if os.path.exists(OUTPUT_VIDEO) else INPUT_VIDEO
+# 항상 INPUT 기준으로 시작 (🔥 중요 수정)
+video_path = INPUT_VIDEO
+
 print("작업 기준 영상:", video_path)
 
 cap = cv2.VideoCapture(video_path)
+
+if not cap.isOpened():
+    print("영상 파일을 열 수 없습니다.")
+    sys.exit()
+
 fps = cap.get(cv2.CAP_PROP_FPS)
 if fps is None or fps <= 0:
     fps = 30
 
 origin_frames = []
+BATCH_SIZE = 300
+real_total_frames = 0
 
 # =============================
-# 최초 300프레임 로드
+# 안전 배치 로드
 # =============================
-for _ in range(300):
-    ret, frame = cap.read()
-    if not ret:
-        break
-    origin_frames.append(frame.copy())
+def load_until(target_index):
+    global real_total_frames
 
-total_frames = len(origin_frames)
-if total_frames == 0:
+    while len(origin_frames) <= target_index:
+        count = 0
+        while count < BATCH_SIZE:
+            ret, frame = cap.read()
+            if not ret:
+                real_total_frames = len(origin_frames)
+                return
+            origin_frames.append(frame.copy())
+            count += 1
+
+load_until(BATCH_SIZE - 1)
+
+if len(origin_frames) == 0:
     print("영상 프레임이 없습니다.")
     sys.exit()
 
+load_until(10**9)
+real_total_frames = len(origin_frames)
+
+print("실제 전체 프레임:", real_total_frames)
+
+# =============================
+# 상태 변수
+# =============================
 current_idx = 0
 paused = True
 drawing = False
@@ -42,18 +68,15 @@ move_offset_y = 0
 trackers = []
 
 start_x, start_y = 0, 0
-
-fixed_mode = False  # 🔥 fixed ROI 모드 추가
+fixed_mode = False
 
 WINDOW = "STICKY ROI MOSAIC EDITOR"
 TRACKBAR = "FRAME"
 
 cv2.namedWindow(WINDOW)
-cv2.setWindowProperty(WINDOW, cv2.WND_PROP_TOPMOST, 1)
-cv2.setWindowProperty(WINDOW, cv2.WND_PROP_TOPMOST, 0)
 
 # =============================
-# 모자이크 함수
+# 모자이크
 # =============================
 def apply_mosaic(frame, roi):
     x, y, w, h = map(int, roi)
@@ -63,7 +86,7 @@ def apply_mosaic(frame, roi):
     w = max(0, w)
     h = max(0, h)
 
-    if w == 0 or h == 0:
+    if w <= 0 or h <= 0:
         return frame
 
     if x + w > frame.shape[1]:
@@ -78,43 +101,99 @@ def apply_mosaic(frame, roi):
     if sub.size == 0:
         return frame
 
-    small = cv2.resize(sub, (max(1, w//10), max(1, h//10)))
+    small = cv2.resize(sub, (max(1, w//20), max(1, h//20)))
     mosaic = cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
     frame[y:y+h, x:x+w] = mosaic
     return frame
 
 # =============================
-# 현재 프레임 다시 그리기
+# redraw
 # =============================
 def redraw_current():
     frame = origin_frames[current_idx].copy()
+
     for t in trackers:
-        if t["start"] <= current_idx and (t["end"] is None or current_idx <= t["end"]):
+        if t["start"] <= current_idx:
+
+            if "end" in t and current_idx > t["end"]:
+                continue
 
             if t["mode"] == "track":
                 idx = current_idx - t["start"]
                 if 0 <= idx < len(t["history"]):
                     roi = t["history"][idx]
                 else:
-                    roi = t["roi"]
+                    continue
             else:
                 roi = t["roi"]
 
             frame = apply_mosaic(frame, roi)
+
     return frame
 
 # =============================
-# 트랙바 콜백
+# 🔥 저장 + origin 갱신
+# =============================
+def save_video():
+    global origin_frames, trackers
+
+    print("💾 저장 시작...")
+
+    new_frames = []
+
+    for f in range(real_total_frames):
+
+        frame = origin_frames[f].copy()
+
+        for t in trackers:
+            if t["start"] <= f:
+
+                if "end" in t and f > t["end"]:
+                    continue
+
+                if t["mode"] == "track":
+                    idx = f - t["start"]
+                    if 0 <= idx < len(t["history"]):
+                        roi = t["history"][idx]
+                    else:
+                        continue
+                else:
+                    roi = t["roi"]
+
+                frame = apply_mosaic(frame, roi)
+
+        new_frames.append(frame)
+
+    # 파일 저장
+    h, w, _ = new_frames[0].shape
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out = cv2.VideoWriter(OUTPUT_VIDEO, fourcc, fps, (w, h))
+
+    for f in new_frames:
+        out.write(f)
+
+    out.release()
+
+    # 🔥 핵심: origin을 저장 결과로 교체
+    origin_frames = new_frames
+
+    # 🔥 trackers 초기화 (이미 적용되었으므로)
+    trackers = []
+
+    print("✅ 저장 완료 + 누적 반영 완료")
+
+# =============================
+# 트랙바
 # =============================
 def on_trackbar(pos):
     global current_idx, paused
     paused = True
-    current_idx = pos
+    current_idx = min(pos, real_total_frames - 1)
 
-cv2.createTrackbar(TRACKBAR, WINDOW, 0, total_frames - 1, on_trackbar)
+cv2.createTrackbar(TRACKBAR, WINDOW, 0, real_total_frames - 1, on_trackbar)
 
 # =============================
-# 마우스 이벤트
+# 마우스
 # =============================
 def mouse_callback(event, x, y, flags, param):
     global start_x, start_y, drawing
@@ -139,16 +218,12 @@ def mouse_callback(event, x, y, flags, param):
     elif event == cv2.EVENT_MOUSEMOVE:
         if moving_roi_index is not None:
             rx, ry, rw, rh = trackers[moving_roi_index]["roi"]
-            new_x = x - move_offset_x
-            new_y = y - move_offset_y
-            trackers[moving_roi_index]["roi"] = (new_x, new_y, rw, rh)
-
-            if trackers[moving_roi_index]["mode"] == "track":
-                trackers[moving_roi_index]["tracker"] = cv2.legacy.TrackerKCF_create()
-                trackers[moving_roi_index]["tracker"].init(
-                    origin_frames[current_idx],
-                    (new_x, new_y, rw, rh)
-                )
+            trackers[moving_roi_index]["roi"] = (
+                x - move_offset_x,
+                y - move_offset_y,
+                rw,
+                rh
+            )
 
     elif event == cv2.EVENT_LBUTTONUP:
 
@@ -165,7 +240,7 @@ def mouse_callback(event, x, y, flags, param):
                     trackers.append({
                         "roi": (rx, ry, rw, rh),
                         "start": current_idx,
-                        "end": None,
+                        "end": current_idx,
                         "mode": "fixed"
                     })
                 else:
@@ -175,7 +250,6 @@ def mouse_callback(event, x, y, flags, param):
                     trackers.append({
                         "roi": (rx, ry, rw, rh),
                         "start": current_idx,
-                        "end": None,
                         "tracker": kcf,
                         "history": [(rx, ry, rw, rh)],
                         "mode": "track"
@@ -184,7 +258,6 @@ def mouse_callback(event, x, y, flags, param):
         moving_roi_index = None
 
     elif event == cv2.EVENT_RBUTTONDOWN:
-
         for i in reversed(range(len(trackers))):
             rx, ry, rw, rh = trackers[i]["roi"]
             if rx <= x <= rx+rw and ry <= y <= ry+rh:
@@ -198,43 +271,31 @@ cv2.setMouseCallback(WINDOW, mouse_callback)
 # =============================
 while True:
 
-    cv2.waitKey(1)
-
     if not paused:
         current_idx += 1
 
-        if current_idx >= total_frames:
-
-            batch_count = 0
-            for _ in range(300):
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                origin_frames.append(frame.copy())
-                batch_count += 1
-
-            if batch_count > 0:
-                total_frames = len(origin_frames)
-                cv2.setTrackbarMax(TRACKBAR, WINDOW, total_frames - 1)
-            else:
-                current_idx = total_frames - 1
-                paused = True
+        if current_idx >= real_total_frames:
+            current_idx = real_total_frames - 1
+            paused = True
 
         for t in trackers:
-            if t["mode"] == "track":
-                if t["start"] <= current_idx and (t["end"] is None or current_idx <= t["end"]):
-                    success, box = t["tracker"].update(origin_frames[current_idx])
-                    if success:
-                        t["roi"] = box
-                    else:
-                        box = t["roi"]
 
-                    if len(t["history"]) <= (current_idx - t["start"]):
-                        t["history"].append(box)
+            if t["start"] <= current_idx:
+
+                if t["mode"] == "fixed":
+                    t["end"] = current_idx
+
+                if t["mode"] == "track":
+                    idx = current_idx - t["start"]
+
+                    if idx >= len(t["history"]):
+                        success, box = t["tracker"].update(origin_frames[current_idx])
+                        if success:
+                            t["roi"] = box
+                        t["history"].append(t["roi"])
 
     frame = redraw_current()
 
-    # 모드 표시
     mode_text = "FIXED MODE" if fixed_mode else "TRACK MODE"
     cv2.putText(frame, mode_text, (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8,
@@ -242,7 +303,7 @@ while True:
 
     if paused:
         for t in trackers:
-            if t["start"] <= current_idx and (t["end"] is None or current_idx <= t["end"]):
+            if t["start"] <= current_idx:
                 x, y, w, h = map(int, t["roi"])
                 color = (0,255,0) if t["mode"] == "track" else (0,0,255)
                 cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
@@ -253,80 +314,14 @@ while True:
     key = cv2.waitKeyEx(10)
 
     if key == ord('q') or key == ord('Q'):
-        for t in trackers:
-            if t["end"] is None:
-                t["end"] = current_idx
         break
-
     elif key == ord('a') or key == ord('A'):
         paused = not paused
-        print("PAUSE" if paused else "PLAY")
-
-    elif key == ord('s') or key == ord('S'):
-        for t in trackers:
-            if t["end"] is None:
-                t["end"] = current_idx
-        print(f"ROI 종료 고정 프레임: {current_idx}")
-
     elif key == ord('f') or key == ord('F'):
         fixed_mode = not fixed_mode
-        print("FIXED MODE ON" if fixed_mode else "TRACK MODE ON")
+    elif key == ord('s') or key == ord('S'):
+        save_video()
 
 cv2.destroyAllWindows()
-
-# =============================
-# 결과 저장
-# =============================
-
-for t in trackers:
-    if t["end"] is None:
-        t["end"] = total_frames - 1
-
-h, w, _ = origin_frames[0].shape
-fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-out = cv2.VideoWriter(OUTPUT_VIDEO, fourcc, fps, (w, h))
-
-save_trackers = []
-
-for t in trackers:
-    if t["mode"] == "track":
-        tracker = cv2.legacy.TrackerKCF_create()
-        tracker.init(origin_frames[t["start"]], t["history"][0])
-        save_trackers.append({
-            "tracker": tracker,
-            "start": t["start"],
-            "end": t["end"],
-            "roi": t["history"][0],
-            "mode": "track"
-        })
-    else:
-        save_trackers.append({
-            "roi": t["roi"],
-            "start": t["start"],
-            "end": t["end"],
-            "mode": "fixed"
-        })
-
-for f in range(total_frames):
-
-    frame = origin_frames[f].copy()
-
-    for t in save_trackers:
-        if t["start"] <= f <= t["end"]:
-            if t["mode"] == "track":
-                if f == t["start"]:
-                    roi = t["roi"]
-                else:
-                    success, box = t["tracker"].update(origin_frames[f])
-                    roi = box if success else t["roi"]
-            else:
-                roi = t["roi"]
-
-            frame = apply_mosaic(frame, roi)
-
-    out.write(frame)
-
-out.release()
 cap.release()
-
-print("✅ 저장 완료 (Track + Fixed 완전 지원):", OUTPUT_VIDEO)
+print("프로그램 종료")
