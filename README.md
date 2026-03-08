@@ -109,4 +109,90 @@ Werkzeug                  3.1.5
 pyinstaller --onefile --noconsole --collect-all cv2 --hidden-import=cv2.legacy main.py
 dist 폴더 안에 input.mp4 파일을 넣어야 작동된다
 
+
+#TRACK MODE 와 FIXED MODE 정상작동하고 있다/ 즉 무 MODE 모두다 ROI 설정후 20프레임에서 50프레임까지 A를 눌러 모자이크 처리한 후 50프레임에서 ROI 를 제거해도 기존에 모자이크 처리된 20프레임에서 50프레임까지 모자이크 처리는 그대로 남아 있다/그러나 Pyinstaller 로 생성된 exe 를 작동시켰을때 fixed mode는 roi 를 지우면 그때까지 모자이크 처리된 프레임의 모자이크도 함께 사라진다/이런 현상을 방지하기 위하여 어떻게 해야하는지 알려주세요
+-문제의 핵심 원인을 먼저 정확히 설명드리겠습니다.
+현재 코드 구조를 보면
+
+화면 표시(redraw_current) → trackers 기반
+영상 저장(save_video) → trackers 기반
+과거 기록 → mosaic_history 일부만 사용
+
+즉 실제 모자이크는 trackers에 의존합니다.
+
+그래서 Python 실행에서는 우연히 정상처럼 보이지만
+PyInstaller exe에서는 ROI 삭제 시 trackers가 비활성화(end 설정) 되면서
+
+20 ~ 50 프레임 모자이크
+→ trackers가 사라짐
+→ redraw_current가 더 이상 모자이크 안함
+→ 과거 모자이크도 사라짐
+
+이 문제가 발생합니다.
+-해결 원리 (중요)
+
+모자이크는 반드시 mosaic_history만 사용해서 그려야 합니다.
+
+즉 구조를 이렇게 바꿔야 합니다.
+
+trackers → ROI 추적용
+mosaic_history → 실제 모자이크 기록
+redraw_current → mosaic_history만 사용
+save_video → mosaic_history만 사용
+
+그러면
+
+ROI 삭제
+→ trackers만 종료
+→ mosaic_history는 그대로
+→ 과거 모자이크 절대 안사라짐
+
+Python / EXE 동일 동작합니다./ 아래 수정한 부분
+
+-def redraw_current():
+
+    frame = get_frame(current_idx)
+
+    if frame is None:
+        return None
+
+    if current_idx in mosaic_history:
+
+        for roi in mosaic_history[current_idx]:
+            frame = apply_mosaic(frame, roi)
+
+    return frame
+
+    -def save_video():
+
+    print("💾 저장 시작")
+
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out = cv2.VideoWriter(OUTPUT_VIDEO, fourcc, fps, (width, height))
+
+    cap2 = cv2.VideoCapture(video_path, cv2.CAP_FFMPEG)
+
+    for f in range(total_frames):
+
+        ret, frame = cap2.read()
+
+        if not ret:
+            break
+
+        if f in mosaic_history:
+
+            for roi in mosaic_history[f]:
+                frame = apply_mosaic(frame, roi)
+
+        out.write(frame)
+
+        if f % 200 == 0:
+            print("저장 진행:", f)
+
+    out.release()
+    cap2.release()
+
+    print("저장 완료")
+    - 결과 정상 작동
+
  
