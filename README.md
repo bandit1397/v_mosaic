@@ -5,7 +5,7 @@
 
 ## 실행
 
-- **exe**: `dist\mosaic.exe` 더블클릭 (빌드 방법은 아래 "exe 빌드" 참고)
+- **exe**: `dist\main.exe` 더블클릭 (빌드 방법은 아래 "exe 빌드" 참고)
 - **소스**: `py -3.11 mosaic.py` 또는 `py -3.11 mosaic.py 영상경로.mp4`
 
 실행하면 영상 파일 선택 창이 뜹니다. 선택하지 않고 닫으면 같은 폴더의 `input.mp4`를 엽니다.
@@ -134,22 +134,21 @@ ROI마다 모드가 따로 있어서 한 영상에 추적 ROI와 고정 ROI를 �
 ## exe 빌드
 
 ```
-py -3.11 -m PyInstaller --onefile --noconsole --collect-all cv2 mosaic.py
+py -3.11 -m PyInstaller main.spec --noconfirm
 ```
 
 필요 패키지: `opencv-contrib-python`, `numpy`, `pillow`, `pyinstaller`
 
-결과: `dist\mosaic.exe` (약 73MB, 한글 글꼴은 Windows의 맑은 고딕 사용)
+결과: `dist\main.exe` (약 73MB, 한글 글꼴은 Windows의 맑은 고딕 사용)
 
-- 로컬의 `main.spec`으로 빌드하는 경우: `py -3.11 -m PyInstaller main.spec --noconfirm` → `dist\main.exe`
-  (`main.spec`은 `main.py`를 빌드하므로 `mosaic.py`와 내용을 같게 유지하세요)
+`main.spec`은 `mosaic.py`를 빌드합니다. 소스 코드는 `mosaic.py` 하나만 고치면 됩니다.
 
 ### 빌드할 때 `PermissionError: [WinError 5] 액세스가 거부되었습니다` 가 나오면
 
 exe가 실행 중이라 파일이 잠긴 상태입니다.
 
 1. 열려 있는 모자이크 편집기 창을 모두 닫습니다 (작업 중이면 먼저 S로 저장).
-2. 창이 안 보이면 작업 관리자에서 `main.exe` / `mosaic.exe`를 종료합니다.
+2. 창이 안 보이면 작업 관리자에서 `main.exe`를 종료합니다.
 3. 다시 빌드합니다.
 
 ---
