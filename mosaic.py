@@ -50,7 +50,7 @@ KEY_ESC, KEY_SPACE, KEY_CTRL_Z = 27, 32, 26
 # 한글 입력 상태에서 눌러도 동작하도록
 HANGUL_KEYS = {
     "ㅁ": "a", "ㄹ": "f", "ㄴ": "s", "ㅂ": "q", "ㅌ": "x", "ㅋ": "z",
-    "ㅊ": "c", "ㅇ": "d", "ㅠ": "b", "ㅕ": "u", "ㅗ": "h",
+    "ㅊ": "c", "ㅇ": "d", "ㅠ": "b", "ㅕ": "u", "ㅗ": "h", "ㅅ": "t",
 }
 
 HELP_LINES = [
@@ -65,7 +65,8 @@ HELP_LINES = [
     None,
     ("", "[ROI 설정]"),
     ("빈 곳 드래그", "새 ROI 만들기"),
-    ("F", "추적 모드(사람을 따라감) ↔ 고정 모드(제자리) 전환"),
+    ("F", "새로 그릴 ROI 모드: 추적(사람을 따라감) ↔ 고정(제자리)"),
+    ("T", "선택한 ROI를 추적 ↔ 고정으로 전환 (이 프레임부터)"),
     ("ROI 드래그", "위치 이동 - 이 프레임부터 다시 추적"),
     ("모서리 드래그", "크기 조절 - 이 프레임부터 다시 추적"),
     ("B", "선택한 ROI를 과거 방향으로 역추적"),
@@ -551,6 +552,36 @@ class Editor:
 
         self.notify(f"역추적 완료: {s - r.start}프레임 ({reason})", 4)
 
+    def convert_selected(self):
+        """선택한 ROI를 현재 프레임부터 추적 ↔ 고정으로 바꿈. 이전 구간은 그대로 둠."""
+        r = self.selected
+
+        if r not in self.rois:
+            self.notify("먼저 ROI를 클릭해서 선택하세요")
+            return
+
+        box = r.box_at(self.cur)
+        vis = clip_box(box, self.W, self.H) if box is not None else None
+
+        if vis is None:
+            self.notify("이 프레임에는 선택한 ROI가 없습니다")
+            return
+
+        self.push_undo()
+
+        new = Roi("fixed" if r.mode == "track" else "track", self.cur, tuple(map(float, vis)))
+        new.end = r.end
+
+        if self.cur == r.start:
+            self.rois[self.rois.index(r)] = new
+        else:
+            r.cut_after(self.cur - 1)
+            self.rois.append(new)
+
+        self.selected = new
+        name = "고정" if new.mode == "fixed" else "추적"
+        self.notify(f"{self.cur} 프레임부터 {name} ROI로 바꿨습니다 (되돌리기: Ctrl+Z)")
+
     # ---------------------------------------------- 이동
 
     def goto(self, f):
@@ -696,6 +727,7 @@ class Editor:
                 color = (0, 0, 255)
 
             cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+            draw_text(frame, "추적" if r.mode == "track" else "고정", (x + 6, y + 6), 14, color, bg=True)
 
             if r is self.selected:
                 for cx, cy in [(x, y), (x + w, y), (x, y + h), (x + w, y + h)]:
@@ -860,6 +892,10 @@ class Editor:
 
         elif ch == "f":
             self.fixed_mode = not self.fixed_mode
+
+        elif ch == "t":
+            self.playing = False
+            self.convert_selected()
 
         elif ch == "s":
             self.save()
